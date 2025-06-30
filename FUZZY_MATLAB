@@ -1,0 +1,116 @@
+%% DC Motor Parameters
+J = 0.01;   
+b = 0.1;    
+K = 0.01;   
+R = 1;      
+L = 0.5;    
+
+%% Time vector
+t_end = 2;          
+dt = 0.001;         
+t = 0:dt:t_end;
+
+%% Setpoint
+setpoint = 1;       
+
+%% Initialize variables
+N = length(t);
+omega = zeros(1,N);   
+i_a = 0;              
+e_prev = 0;
+
+V_MAX = 24;
+
+%% Membership function centers (simplified for e and de)
+MFs = [-1, -0.5, 0, 0.5, 1];  % NB NS Z PS PB
+
+%% Rule base (5x5): rows = e, cols = de
+% Output voltage level in V_MAX fraction
+RULE_BASE = [
+    -1  -1  -0.5  0    0.5;   % e = NB
+    -1  -0.5 -0.5 0    0.5;   % e = NS
+    -0.5 -0.5 0    0.5  0.5;  % e = Z
+    0    0    0.5  0.5  1;    % e = PS
+    0    0.5  0.5  1    1     % e = PB
+];
+
+for k = 2:N
+    % Compute error and delta error, normalize [-1,1]
+    e = setpoint - omega(k-1);
+    de = (e - e_prev)/dt;
+    e_prev = e;
+    
+    e_norm = max(min(e,1),-1);
+    de_norm = max(min(de/10,1),-1);  % scale de
+    
+    % Compute degree of membership (triangular)
+    e_mf = max(1 - abs(e_norm - MFs)/0.5, 0);
+    de_mf = max(1 - abs(de_norm - MFs)/0.5, 0);
+    
+    % Aggregate fuzzy rules
+    V_sum = 0;
+    weight_sum = 0;
+    for i = 1:5
+        for j = 1:5
+            w = e_mf(i) * de_mf(j);
+            V_rule = RULE_BASE(i,j) * V_MAX;
+            V_sum = V_sum + w * V_rule;
+            weight_sum = weight_sum + w;
+        end
+    end
+    
+    if weight_sum > 0
+        V = V_sum / weight_sum;  % defuzzify
+    else
+        V = 0;
+    end
+    
+    % Motor dynamics
+    di_dt = (V - R*i_a - K*omega(k-1)) / L;
+    i_a = i_a + di_dt * dt;
+    
+    domega_dt = (K*i_a - b*omega(k-1)) / J;
+    omega(k) = omega(k-1) + domega_dt * dt;
+end
+
+%% Plot results
+figure;
+plot(t, omega, 'b', 'LineWidth', 2);
+hold on;
+yline(setpoint, 'r--', 'LineWidth', 1.5);
+xlabel('Time (s)');
+ylabel('Motor Speed (rad/s)');
+title('DC Motor Speed Response with True Fuzzy Logic Controller');
+legend('Motor Speed', 'Setpoint');
+grid on;
+
+%% Performance metrics
+info = stepinfo(omega, t, setpoint);
+mse = mean((setpoint - omega).^2);
+
+% Display raw info
+disp('--- Performance Metrics (True Fuzzy Logic) ---');
+disp(info);
+fprintf('Mean Squared Error (MSE): %.5f\n', mse);
+
+% Manual rise time if needed
+if isnan(info.RiseTime)
+    final_val = omega(end);
+    t_10_idx = find(omega >= 0.1 * final_val, 1);
+    t_90_idx = find(omega >= 0.9 * final_val, 1);
+    
+    if ~isempty(t_10_idx) && ~isempty(t_90_idx)
+        rise_time_manual = t(t_90_idx) - t(t_10_idx);
+    else
+        rise_time_manual = 0; % fallback if thresholds not crossed
+    end
+else
+    rise_time_manual = info.RiseTime;
+end
+
+% Display clean summary
+fprintf('--- Performance Summary (Fuzzy Logic) ---\n');
+fprintf('Rise Time: %.5f s\n', rise_time_manual);
+fprintf('Overshoot: %.2f %%\n', info.Overshoot);
+fprintf('Steady-state value: %.5f\n', omega(end));
+fprintf('Mean Squared Error (MSE): %.5f\n', mse);
