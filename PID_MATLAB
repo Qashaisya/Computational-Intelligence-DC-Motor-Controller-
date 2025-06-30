@@ -1,0 +1,70 @@
+%% DC Motor Parameters
+J = 0.01;    % Moment of inertia (kg.m^2)
+b = 0.1;     % Damping coefficient (N.m.s)
+K = 0.01;    % Motor constant (N.m/A or V/rad/s)
+R = 1;       % Armature resistance (Ohm)
+L = 0.5;     % Armature inductance (H)
+
+%% Time vector
+t_end = 5;          % Simulation time (s)
+dt = 0.001;         % Time step (s)
+t = 0:dt:t_end;
+
+%% Reference input (setpoint speed)
+setpoint = 1;       % rad/s (you can change this)
+
+%% PID Parameters (tune as needed)
+Kp = 100;
+Ki = 200;
+Kd = 10;
+
+%% Initialize variables
+N = length(t);
+omega = zeros(1,N);   % Motor speed (rad/s)
+i_a = 0;              % Armature current (A)
+theta = 0;            % Motor position (rad)
+
+e_prev = 0;
+integral = 0;
+
+%% Simulation loop
+for k = 2:N
+    % Error between setpoint and actual speed
+    e = setpoint - omega(k-1);
+    
+    % PID Control signal (voltage)
+    integral = integral + e*dt;
+    derivative = (e - e_prev)/dt;
+    V = Kp*e + Ki*integral + Kd*derivative;
+    e_prev = e;
+    
+    % Motor dynamics (Euler integration)
+    % di/dt = (V - R*i - K*omega)/L
+    di_dt = (V - R*i_a - K*omega(k-1)) / L;
+    i_a = i_a + di_dt*dt;
+    
+    % domega/dt = (K*i - b*omega)/J
+    domega_dt = (K*i_a - b*omega(k-1)) / J;
+    omega(k) = omega(k-1) + domega_dt*dt;
+end
+
+%% Plot Results
+figure;
+plot(t, omega, 'b', 'LineWidth', 2);
+hold on;
+yline(setpoint, 'r--', 'LineWidth', 1.5);
+xlabel('Time (s)');
+ylabel('Motor Speed (rad/s)');
+title('DC Motor Speed Response with PID Control');
+legend('Motor Speed', 'Setpoint');
+grid on;
+
+%% Compute performance metrics
+% Rise Time, Settling Time, Overshoot, etc.
+info = stepinfo(omega, t, setpoint);
+disp('--- Performance Metrics ---');
+disp(info);
+
+% Mean Squared Error (MSE)
+mse = mean((setpoint - omega).^2);
+fprintf('Mean Squared Error (MSE): %.5f\n', mse);
