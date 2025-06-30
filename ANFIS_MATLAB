@@ -1,0 +1,115 @@
+%% DC Motor Parameters
+J = 0.01;   
+b = 0.1;    
+K = 0.01;   
+R = 1;      
+L = 0.5;    
+
+V_MAX = 24;
+
+%% Time vector
+t_end = 2;
+dt = 0.001;
+t = 0:dt:t_end;
+N = length(t);
+
+%% Generate richer training data
+setpoints = [0.5, 1, 1.5]; % multiple setpoints
+training_data = [];
+
+for s = 1:length(setpoints)
+    sp = setpoints(s);
+    omega = zeros(1, N);
+    i_a = 0;
+    e_prev = 0;
+    
+    for k = 2:N
+        e = sp - omega(k-1);
+        de = (e - e_prev)/dt;
+        e_prev = e;
+        
+        % Idealized control (PID-like)
+        V = 10 * e + 1 * de;
+        V = max(min(V, V_MAX), -V_MAX);
+        
+        % Save training sample
+        training_data = [training_data; e, de, V];
+        
+        % Motor dynamics
+        di_dt = (V - R*i_a - K*omega(k-1)) / L;
+        i_a = i_a + di_dt * dt;
+        
+        domega_dt = (K*i_a - b*omega(k-1)) / J;
+        omega(k) = omega(k-1) + domega_dt * dt;
+    end
+end
+
+%% Train ANFIS
+initial_fis = genfis2(training_data(:,1:2), training_data(:,3), 0.2); % finer clustering
+
+options = anfisOptions('InitialFIS', initial_fis, ...
+                       'EpochNumber', 50, ...
+                       'DisplayANFISInformation', 1, ...
+                       'DisplayErrorValues', 1, ...
+                       'DisplayStepSize', 1, ...
+                       'DisplayFinalResults', 1);
+
+anfis_model = anfis(training_data, options);
+
+%% Apply ANFIS controller
+setpoint = 1; % test setpoint
+omega_anfis = zeros(1,N);
+i_a = 0;
+e_prev = 0;
+
+for k = 2:N
+    e = setpoint - omega_anfis(k-1);
+    de = (e - e_prev)/dt;
+    e_prev = e;
+    
+    V = evalfis(anfis_model, [e de]);
+    V = max(min(V, V_MAX), -V_MAX);
+    
+    di_dt = (V - R*i_a - K*omega_anfis(k-1)) / L;
+    i_a = i_a + di_dt * dt;
+    
+    domega_dt = (K*i_a - b*omega_anfis(k-1)) / J;
+    omega_anfis(k) = omega_anfis(k-1) + domega_dt * dt;
+end
+
+%% Plot motor speed only
+figure;
+plot(t, omega_anfis, 'b-', 'LineWidth', 2);
+hold on;
+yline(setpoint, 'r--', 'LineWidth', 1.5);
+xlabel('Time (s)');
+ylabel('Motor Speed (rad/s)');
+title('ANFIS Motor Speed');
+legend('ANFIS Motor Speed', 'Setpoint');
+grid on;
+
+%% Performance metrics
+info = stepinfo(omega_anfis, t, setpoint);
+mse = mean((setpoint - omega_anfis).^2);
+
+% Handle NaN rise time manually
+if isnan(info.RiseTime)
+    final_val = omega_anfis(end);
+    t_10_idx = find(omega_anfis >= 0.1 * final_val, 1);
+    t_90_idx = find(omega_anfis >= 0.9 * final_val, 1);
+    
+    if ~isempty(t_10_idx) && ~isempty(t_90_idx)
+        rise_time_manual = t(t_90_idx) - t(t_10_idx);
+    else
+        rise_time_manual = 0;
+    end
+else
+    rise_time_manual = info.RiseTime;
+end
+
+% Display summary
+fprintf('--- ANFIS Performance Summary ---\n');
+fprintf('Rise Time: %.5f s\n', rise_time_manual);
+fprintf('Overshoot: %.2f %%\n', info.Overshoot);
+fprintf('Steady-state value: %.5f\n', omega_anfis(end));
+fprintf('Mean Squared Error (MSE): %.5f\n', mse);
